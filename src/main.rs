@@ -83,10 +83,10 @@ pub fn main() -> anyhow::Result<()> {
     turn_b.borrow_mut().allocate()?;
 
     let client2_reflexive = turn_b.borrow().reflexive_addr.unwrap();
-    println!("client 2 reflexive {:?}", client2_reflexive);
+    println!("client 2 reflexive {:?} relay {:?}", client2_reflexive, turn_b.borrow().relay_addr.unwrap());
 
     let client1_reflexive = turn_a.borrow().reflexive_addr.unwrap();
-    println!("client 1 reflexive {:?}", client1_reflexive);
+    println!("client 1 reflexive {:?} relay {:?}", client1_reflexive, turn_a.borrow().relay_addr.unwrap());
 
     // allow for client1 -> turn A -> turn B -> client2 and vice versa
     turn_a
@@ -134,7 +134,7 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("\n\nissue 2 --- packet loss after ~ 5 minutes");
+    println!("\n\ntest random sized packets");
     println!("inbound pings  are client2 -> turn b -> turn a -> client1");
 
     println!("outbound pings are client1 -> turn a -> turn b -> client2");
