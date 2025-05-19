@@ -29,6 +29,15 @@ pub fn main() -> anyhow::Result<()> {
             args[2].to_owned(),
             args[3].to_owned(),
         )
+    } else if args.len() == 5 {
+        (
+            args[1].to_owned(),
+            args[2].to_owned(),
+            args[3].to_owned(),
+            "".to_owned(),
+            "".to_owned(),
+            "".to_owned(),
+        )
     } else if args.len() == 7 {
         (
             args[1].to_owned(),
@@ -49,8 +58,8 @@ pub fn main() -> anyhow::Result<()> {
     client1.set_read_timeout(Some(TIMEOUT))?;
     client2.set_read_timeout(Some(TIMEOUT))?;
 
-    let client1 = Rc::new(RefCell::new(client1));
-    let client2 = Rc::new(RefCell::new(client2));
+    let client1 = Rc::new(RefCell::new((None, client1)));
+    let client2 = Rc::new(RefCell::new((None, client2)));
 
     let addr_a = server_a
         .to_socket_addrs()
@@ -59,42 +68,66 @@ pub fn main() -> anyhow::Result<()> {
         .next()
         .unwrap();
     println!("turn a: {} ({})", server_a, addr_a);
-    let turn_a = Rc::new(RefCell::new(TurnClient::new(
+    let turn_a = SocketHandle::Turn(Rc::new(RefCell::new(TurnClient::new(
         SocketHandle::Udp(client1.clone()),
         addr_a,
         &user_a,
         &pass_a,
-    )));
-    turn_a.borrow_mut().allocate()?;
+    ))));
+    turn_a.allocate()?;
 
-    let addr_b = server_b
-        .to_socket_addrs()
-        .unwrap()
-        .filter(|a| a.is_ipv4())
-        .next()
-        .unwrap();
-    println!("turn b: {} ({})", server_b, addr_b);
-    let turn_b = Rc::new(RefCell::new(TurnClient::new(
-        SocketHandle::Udp(client2.clone()),
-        addr_b,
-        &user_b,
-        &pass_b,
-    )));
-    turn_b.borrow_mut().allocate()?;
+    let (turn_b, client_1_2_path, client_2_1_path) = if server_b != "" {
+        let addr_b = server_b
+            .to_socket_addrs()
+            .unwrap()
+            .filter(|a| a.is_ipv4())
+            .next()
+            .unwrap();
+        println!("turn b: {} ({})", server_b, addr_b);
+        let turn_b = SocketHandle::Turn(Rc::new(RefCell::new(TurnClient::new(
+            SocketHandle::Udp(client2.clone()),
+            addr_b,
+            &user_b,
+            &pass_b,
+        ))));
+        turn_b.allocate()?;
 
-    let client2_reflexive = turn_b.borrow().reflexive_addr.unwrap();
-    println!("client 2 reflexive {:?} relay {:?}", client2_reflexive, turn_b.borrow().relay_addr.unwrap());
+        let client2_reflexive = turn_b.reflexive_addr().unwrap();
+        println!(
+            "client 2 reflexive {:?} relay {:?}",
+            client2_reflexive,
+            turn_b.relay_addr().unwrap()
+        );
+        (
+            turn_b,
+            "client1 -> turn a -> turn b -> client2",
+            "client2 -> turn b -> turn a -> client1",
+        )
+    } else {
+        turn_a.add_permission(turn_a.reflexive_addr().unwrap())?;
 
-    let client1_reflexive = turn_a.borrow().reflexive_addr.unwrap();
-    println!("client 1 reflexive {:?} relay {:?}", client1_reflexive, turn_a.borrow().relay_addr.unwrap());
+        let handle = SocketHandle::Udp(client2);
+
+        let (_duration, addr) = turn_a.send_from_peer(&handle).unwrap();
+        println!("client 2 address {} ", addr);
+        handle.set_relay_addr(addr);
+        (
+            handle,
+            "client1 -> turn a -> client2",
+            "client2 -> turn a -> client1",
+        )
+    };
+
+    let client1_reflexive = turn_a.reflexive_addr().unwrap();
+    println!(
+        "client 1 reflexive {:?} relay {:?}",
+        client1_reflexive,
+        turn_a.relay_addr().unwrap()
+    );
 
     // allow for client1 -> turn A -> turn B -> client2 and vice versa
-    turn_a
-        .borrow_mut()
-        .add_permission(turn_b.borrow().relay_addr.unwrap())?;
-    turn_b
-        .borrow_mut()
-        .add_permission(turn_a.borrow().relay_addr.unwrap())?;
+    turn_a.add_permission(turn_b.relay_addr().unwrap())?;
+    turn_b.add_permission(turn_a.relay_addr().unwrap())?;
 
     // client1 -> A -> B -> client2
     let mut min_c_a_b_c = Duration::MAX;
@@ -106,25 +139,29 @@ pub fn main() -> anyhow::Result<()> {
 
     for _ in 0..CYCLES {
         // client -> turn a -> turn b -> client
-        if let Ok((time, _peer_observed)) = turn_a.borrow().relay_to_client(&turn_b.borrow()) {
+        if let Ok((time, _peer_observed)) = turn_a.relay_to_client(&turn_b) {
             min_c_a_b_c = min(min_c_a_b_c, time);
             count_c_a_b_c += 1;
         }
 
         // client -> turn b -> turn a -> client
-        if let Ok((time, _peer_observed)) = turn_b.borrow().relay_to_client(&turn_a.borrow()) {
+        if let Ok((time, _peer_observed)) = turn_b.relay_to_client(&turn_a) {
             min_c_b_a_c = min(min_c_b_a_c, time);
             count_c_b_a_c += 1;
         }
     }
     println!(
-        "client1 -> turn a -> turn b -> client2:         ({})  {}",
+        "test ping {}:         ({}/{})  {} ms",
+        client_1_2_path,
         count_c_a_b_c,
+        CYCLES,
         fmt_ms(min_c_a_b_c)
     );
     println!(
-        "client2 -> turn b -> turn a -> client1:         ({})  {}",
+        "test ping {}:         ({}/{})  {} ms",
+        client_2_1_path,
         count_c_b_a_c,
+        CYCLES,
         fmt_ms(min_c_b_a_c)
     );
 
@@ -135,25 +172,20 @@ pub fn main() -> anyhow::Result<()> {
     }
 
     println!("\n\ntest random sized packets");
-    println!("inbound pings  are client2 -> turn b -> turn a -> client1");
+    println!("inbound pings  are {}", client_2_1_path);
+    println!("outbound pings are {}", client_1_2_path);
 
-    println!("outbound pings are client1 -> turn a -> turn b -> client2");
+    println!("time, sent, recv / recv-err / loss %"); // , rtt min / avg / max / stddev, throughput");
 
-    println!("packet counts are short long matched duplicate unknown / sent");
+    let mut inbound_sent = 0;
+    let mut inbound_recv = 0;
+    let mut inbound_recv_err = 0;
+    let mut inbound_rtts = vec![];
 
-    let mut inbound_short = 0;
-    let mut inbound_long = 0;
-    let mut inbound_matched = 0;
-    let mut inbound_duplicate = 0;
-    let mut inbound_unknown = 0;
-
-    let mut outbound_short = 0;
-    let mut outbound_long = 0;
-    let mut outbound_matched = 0;
-    let mut outbound_duplicate = 0;
-    let mut outbound_unknown = 0;
-
-    let mut sent = 0;
+    let mut outbound_sent = 0;
+    let mut outbound_recv = 0;
+    let mut outbound_recv_err = 0;
+    let mut outbound_rtts = vec![];
 
     let start = Instant::now();
     let mut last_refresh = start;
@@ -161,29 +193,49 @@ pub fn main() -> anyhow::Result<()> {
 
     loop {
         let now = Instant::now();
-        let will_stop = now.duration_since(start) > Duration::from_secs(10);
+        let will_stop = now.duration_since(start) > Duration::from_secs(120);
 
-        if now.duration_since(last_output) > Duration::from_secs(1) || will_stop {
+        if now.duration_since(last_output) > Duration::from_secs(1)
+            || will_stop && (inbound_sent != 0 && outbound_sent != 0)
+        {
             let utc = OffsetDateTime::now_utc();
             let (h, m, s) = utc.to_hms();
-            println!(
-                "{:02}:{:02}:{:02} inbound pings {} {} {} {} {} /{}; outbound pings {} {} {} {} {}/{}",
-                h, m, s, inbound_short, inbound_long, inbound_matched, inbound_duplicate, inbound_unknown, sent,
-                outbound_short, outbound_long, outbound_matched, outbound_duplicate, outbound_unknown,
-                sent,
-            );
-            inbound_short = 0;
-            inbound_long = 0;
-            inbound_matched = 0;
-            inbound_duplicate = 0;
-            inbound_unknown = 0;
 
-            outbound_short = 0;
-            outbound_long = 0;
-            outbound_matched = 0;
-            outbound_duplicate = 0;
-            outbound_unknown = 0;
-            sent = 0;
+            //let (inbound_min, inbound_max, inbound_avg, inbound_dev) = ("?", "?", "?", "?");
+            //let (outbound_min, outbound_max, outbound_avg, outbound_dev) = ("?", "?", "?", "?");
+
+            println!(
+                concat!(
+                    "{:02}:{:02}:{:02} inbound pings {}, {} / {} / {}%",
+                    //, {} / {} / {} / {}, {}
+                    "; outbound pings {}, {} / {} / {}%",
+                    //", {} / {} / {} / {}, {}"
+                ),
+                h,
+                m,
+                s,
+                inbound_sent,
+                inbound_recv,
+                inbound_recv_err,
+                100 * (inbound_sent - inbound_recv) / inbound_sent,
+                //inbound_min, inbound_avg, inbound_max, inbound_dev, "?",
+                outbound_sent,
+                outbound_recv,
+                outbound_recv_err,
+                100 * (outbound_sent - outbound_recv) / outbound_sent,
+                // outbound_min, outbound_avg, outbound_max, outbound_dev, "?",
+            );
+
+            inbound_sent = 0;
+            inbound_recv = 0;
+            inbound_recv_err = 0;
+            inbound_rtts = vec![];
+
+            outbound_sent = 0;
+            outbound_recv = 0;
+            outbound_recv_err = 0;
+            outbound_rtts = vec![];
+
             last_output = now;
         }
 
@@ -195,36 +247,27 @@ pub fn main() -> anyhow::Result<()> {
             last_refresh = now;
             println!("refreshing allocation permissions");
 
-            turn_b.borrow_mut().refresh()?;
-            turn_a
-                .borrow_mut()
-                .add_permission(turn_b.borrow().relay_addr.unwrap())?;
-            turn_b
-                .borrow_mut()
-                .add_permission(turn_a.borrow().relay_addr.unwrap())?;
+            turn_b.refresh()?;
+            turn_a.add_permission(turn_b.relay_addr().unwrap())?;
+            turn_b.add_permission(turn_a.relay_addr().unwrap())?;
         }
 
-        let (short, long, matched, duplicate, unknown) =
-            turn_b
-                .borrow()
-                .relay_to_client_multiple(&turn_a.borrow(), PINGS_PER_ROUND, PING_SIZE);
-        inbound_short += short;
-        inbound_long += long;
-        inbound_matched += matched;
-        inbound_duplicate += duplicate;
-        inbound_unknown += unknown;
+        let (sent, recv, recv_err, mut rtts) =
+            turn_b.relay_to_client_multiple(&turn_a, PINGS_PER_ROUND, PING_SIZE);
 
-        let (short, long, matched, duplicate, unknown) =
-            turn_a
-                .borrow()
-                .relay_to_client_multiple(&turn_b.borrow(), PINGS_PER_ROUND, PING_SIZE);
-        outbound_short += short;
-        outbound_long += long;
-        outbound_matched += matched;
-        outbound_duplicate += duplicate;
-        outbound_unknown += unknown;
+        inbound_sent += sent;
+        inbound_recv += recv;
+        inbound_recv_err += recv_err;
+        inbound_rtts.append(&mut rtts);
 
-        sent += PINGS_PER_ROUND;
+        let (sent, recv, recv_err, mut rtts) =
+            turn_a.relay_to_client_multiple(&turn_b, PINGS_PER_ROUND, PING_SIZE);
+
+        outbound_sent += sent;
+        outbound_recv += recv;
+        outbound_recv_err += recv_err;
+        outbound_rtts.append(&mut rtts);
+
         sleep(Duration::from_millis(10)); // sleep here to reduce maximum traffic
     }
 

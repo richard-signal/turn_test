@@ -98,23 +98,172 @@ fn send_data_pls() -> Message {
 
 #[derive(Debug)]
 pub enum SocketHandle {
-    Udp(Rc<RefCell<UdpSocket>>),
+    Udp(Rc<RefCell<(Option<SocketAddr>, UdpSocket)>>),
     Turn(Rc<RefCell<TurnClient>>),
 }
 
 impl SocketHandle {
     fn send_to(&self, buf: &[u8], addr: SocketAddr) -> anyhow::Result<usize> {
         match self {
-            SocketHandle::Udp(socket) => Ok(socket.borrow().send_to(buf, addr)?),
+            SocketHandle::Udp(socket) => Ok(socket.borrow().1.send_to(buf, addr)?),
             SocketHandle::Turn(socket) => Ok(socket.borrow().send_to(buf, addr)?),
         }
     }
 
     fn recv_from(&self, buf: &mut [u8]) -> anyhow::Result<(usize, SocketAddr)> {
         match self {
-            SocketHandle::Udp(socket) => Ok(socket.borrow().recv_from(buf)?),
+            SocketHandle::Udp(socket) => Ok(socket.borrow().1.recv_from(buf)?),
             SocketHandle::Turn(socket) => Ok(socket.borrow().recv_from(buf)?),
         }
+    }
+
+    pub fn relay_addr(&self) -> Option<SocketAddr> {
+        match self {
+            SocketHandle::Udp(socket) => socket.borrow().0.clone(),
+            SocketHandle::Turn(socket) => socket.borrow().relay_addr,
+        }
+    }
+
+    pub fn set_relay_addr(&self, addr: SocketAddr) {
+        match self {
+            SocketHandle::Udp(socket) => socket.borrow_mut().0 = Some(addr),
+            SocketHandle::Turn(_socket) => unimplemented!(),
+        }
+    }
+
+    pub fn reflexive_addr(&self) -> Option<SocketAddr> {
+        match self {
+            SocketHandle::Udp(socket) => socket.borrow().0.clone(),
+            SocketHandle::Turn(socket) => socket.borrow().reflexive_addr,
+        }
+    }
+
+    pub fn add_permission(&self, addr: SocketAddr) -> anyhow::Result<()> {
+        match self {
+            SocketHandle::Udp(_socket) => Ok(()),
+            SocketHandle::Turn(socket) => socket.borrow_mut().add_permission(addr),
+        }
+    }
+
+    pub fn allocate(&self) -> anyhow::Result<()> {
+        match self {
+            SocketHandle::Udp(_socket) => unimplemented!(),
+            SocketHandle::Turn(socket) => socket.borrow_mut().allocate(),
+        }
+    }
+
+    pub fn refresh(&self) -> anyhow::Result<()> {
+        match self {
+            SocketHandle::Udp(_socket) => Ok(()),
+            SocketHandle::Turn(socket) => socket.borrow_mut().refresh(),
+        }
+    }
+
+    pub fn relay_to_client_multiple(
+        &self,
+        recv_client: &SocketHandle,
+        count: usize,
+        size: usize,
+    ) -> (usize, usize, usize, Vec<usize>) {
+        // send response
+        let mut found = vec![false; count];
+
+        let mut rand = ThreadRng::default();
+        let mut stub = [0 as u8; STUB_LEN];
+        rand.fill_bytes(&mut stub);
+        let min_length = STUB_LEN + 3;
+        assert!(count < 256);
+        for i in 0..count {
+            assert!(min_length <= size);
+            assert!(size <= 0xFFFF);
+            let length = rand.gen_range(min_length..=size) as u16;
+
+            let mut buf = Vec::with_capacity(length as usize);
+            buf.extend(stub);
+            buf.write_u16::<NetworkEndian>(length).unwrap();
+            buf.resize(length.into(), i as u8);
+
+            NetworkEndian::write_u16(&mut buf[STUB_LEN..STUB_LEN + 2], length as u16);
+            let _ = self.send_to(&buf, recv_client.relay_addr().unwrap());
+        }
+
+        let mut buf = [0; 65536];
+
+        let mut recv = 0;
+        let mut recv_err = 0;
+        let rtts = vec![];
+
+        let mut left = count;
+
+        while left > 0 {
+            match recv_client.recv_from(&mut buf) {
+                Ok((length, _)) => {
+                    left -= 1;
+                    if length < min_length {
+                        recv_err += 1;
+                    } else if buf[0..STUB_LEN] == stub {
+                        let intended_length = NetworkEndian::read_u16(&buf[STUB_LEN..STUB_LEN + 2]);
+                        if length < intended_length.into() {
+                            recv_err += 1;
+                        } else if length > intended_length.into() {
+                            recv_err += 1;
+                        } else {
+                            let n = buf[STUB_LEN + 3];
+                            let other_count = buf[STUB_LEN + 3..length]
+                                .iter()
+                                .filter(|x| **x != n)
+                                .count();
+                            if other_count > 0 || n as usize >= found.len() {
+                                recv_err += 1;
+                            } else {
+                                let n = n as usize;
+                                if found[n] {
+                                    recv_err += 1;
+                                } else {
+                                    recv += 1;
+                                    found[n] = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    return (count, recv, recv_err, rtts);
+                }
+            }
+        }
+        (count, recv, recv_err, rtts)
+    }
+
+    pub fn relay_to_client(
+        &self,
+        recv_client: &SocketHandle,
+    ) -> anyhow::Result<(Duration, SocketAddr)> {
+        // send response
+        let buf = [0x21]; // !
+        let start = Instant::now();
+        self.send_to(&buf, recv_client.relay_addr().unwrap())?;
+
+        let mut buf = [0; 65536];
+        let (_bytes, src) = recv_client.recv_from(&mut buf)?;
+
+        let finish = Instant::now();
+        let time = finish.duration_since(start);
+        Ok((time, src))
+    }
+
+    pub fn send_from_peer(&self, peer: &SocketHandle) -> anyhow::Result<(Duration, SocketAddr)> {
+        // send relay
+        let buf = [0x21]; // !
+        let start = Instant::now();
+        peer.send_to(&buf, self.relay_addr().unwrap())?;
+
+        let mut buf = [0; 65536];
+        let (_bytes, src) = self.recv_from(&mut buf)?;
+
+        let finish = Instant::now();
+        let time = finish - start;
+        Ok((time, src))
     }
 }
 
@@ -289,98 +438,6 @@ impl TurnClient {
         }
     }
 
-    pub fn relay_to_client(
-        &self,
-        recv_client: &TurnClient,
-    ) -> anyhow::Result<(Duration, SocketAddr)> {
-        // send response
-        let buf = [0x21]; // !
-        let start = Instant::now();
-        self.send_to(&buf, recv_client.relay_addr.unwrap())?;
-
-        let mut buf = [0; 65536];
-        let (_bytes, src) = recv_client.recv_from(&mut buf)?;
-
-        let finish = Instant::now();
-        let time = finish.duration_since(start);
-        Ok((time, src))
-    }
-
-    pub fn relay_to_client_multiple(
-        &self,
-        recv_client: &TurnClient,
-        count: usize,
-        size: usize,
-    ) -> (usize, usize, usize, usize, usize) {
-        // send response
-        let mut found = vec![false; count];
-
-        let mut rand = ThreadRng::default();
-        let mut stub = [0 as u8; STUB_LEN];
-        rand.fill_bytes(&mut stub);
-        let min_length = STUB_LEN + 3;
-        assert!(count < 256);
-        for i in 0..count {
-            assert!(min_length <= size);
-            assert!(size <= 0xFFFF);
-            let length = rand.gen_range(min_length..=size) as u16;
-
-            let mut buf = Vec::with_capacity(length as usize);
-            buf.extend(stub);
-            buf.write_u16::<NetworkEndian>(length).unwrap();
-            buf.resize(length.into(), i as u8);
-
-            NetworkEndian::write_u16(&mut buf[STUB_LEN..STUB_LEN + 2], length as u16);
-            let _ = self.send_to(&buf, recv_client.relay_addr.unwrap());
-        }
-
-        let mut buf = [0; 65536];
-
-        let mut short = 0;
-        let mut long = 0;
-        let mut matched = 0;
-        let mut duplicate = 0;
-        let mut unknown = 0;
-        
-        let mut left = count;
-
-        while left > 0 {
-            match recv_client.recv_from(&mut buf) {
-                Ok((length, _)) => {
-                    left -= 1;
-                    if length < min_length {
-                        short += 1;
-                    } else if buf[0..STUB_LEN] == stub {
-                        let intended_length = NetworkEndian::read_u16(&buf[STUB_LEN..STUB_LEN + 2]);
-                        if length < intended_length.into() {
-                            short += 1;
-                        } else if length > intended_length.into() {
-                            long += 1;
-                        } else {
-                            let n = buf[STUB_LEN + 3];
-                            let other_count = buf[STUB_LEN + 3..length].iter().filter(|x| **x != n).count();
-                            if other_count > 0 || n as usize >= found.len() {
-                                unknown += 1;
-                            } else {
-                                let n = n as usize;
-                                if found[n] {
-                                    duplicate += 1;
-                                } else {
-                                    matched += 1;
-                                    found[n] = true;
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(_) => {
-                    return (short, long, matched, duplicate, unknown);
-                }
-            }
-        }
-        (short, long, matched, duplicate, unknown)
-    }
-
     pub fn relay_to_peer(
         &self,
         addr: SocketAddr,
@@ -396,20 +453,6 @@ impl TurnClient {
 
         let finish = Instant::now();
         let time = finish.duration_since(start);
-        Ok((time, src))
-    }
-
-    pub fn send_from_peer(&self, peer: &UdpSocket) -> anyhow::Result<(Duration, SocketAddr)> {
-        // send relay
-        let buf = [0x21]; // !
-        let start = Instant::now();
-        peer.send_to(&buf, self.relay_addr.unwrap())?;
-
-        let mut buf = [0; 65536];
-        let (_bytes, src) = self.recv_from(&mut buf)?;
-
-        let finish = Instant::now();
-        let time = finish - start;
         Ok((time, src))
     }
 
