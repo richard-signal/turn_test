@@ -100,8 +100,8 @@ pub fn main() -> anyhow::Result<()> {
         );
         (
             turn_b,
-            "client1 -> turn a -> turn b -> client2",
-            "client2 -> turn b -> turn a -> client1",
+            "client1 (TURN) -> turn a -> (relay) turn b -> (TURN) client2",
+            "client2 (TURN) -> turn b -> (relay) turn a -> (TURN) client1",
         )
     } else {
         turn_a.add_permission(turn_a.reflexive_addr().unwrap())?;
@@ -113,8 +113,8 @@ pub fn main() -> anyhow::Result<()> {
         handle.set_relay_addr(addr);
         (
             handle,
-            "client1 -> turn a -> client2",
-            "client2 -> turn a -> client1",
+            "client1 (TURN) -> turn a -> (relay) client2",
+            "client2 (relay) -> turn a -> (TURN) client1",
         )
     };
 
