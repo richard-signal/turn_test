@@ -113,8 +113,8 @@ pub fn main() -> anyhow::Result<()> {
         handle.set_relay_addr(addr);
         (
             handle,
-            "client1 (TURN) -> turn a -> (relay) client2",
-            "client2 (relay) -> turn a -> (TURN) client1",
+            "client1 (TURN)  -> turn a -> (relay)   peer",
+            "peer    (relay) -> turn a -> (TURN) client1",
         )
     };
 
