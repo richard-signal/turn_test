@@ -109,7 +109,7 @@ pub fn main() -> anyhow::Result<()> {
         let handle = SocketHandle::Udp(client2);
 
         let (_duration, addr) = turn_a.send_from_peer(&handle).unwrap();
-        println!("client 2 address {} ", addr);
+        println!("peer address {} ", addr);
         handle.set_relay_addr(addr);
         (
             handle,
