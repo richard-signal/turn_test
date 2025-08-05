@@ -15,7 +15,7 @@ use time::OffsetDateTime;
 
 const CYCLES: u32 = 2;
 const TIMEOUT: Duration = Duration::from_millis(400);
-const PINGS_PER_ROUND: usize = 5;
+const PINGS_PER_ROUND: usize = 1;
 const PING_SIZE: usize = 1200;
 
 pub fn main() -> anyhow::Result<()> {
@@ -293,7 +293,7 @@ pub fn main() -> anyhow::Result<()> {
         outbound_recv_err += recv_err;
         print_rtt(rtt, &ranges);
 
-        sleep(Duration::from_millis(10)); // sleep here to reduce maximum traffic
+        sleep(Duration::from_millis(1)); // sleep here to reduce maximum traffic
     }
 
     Ok(())
