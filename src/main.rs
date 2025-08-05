@@ -193,7 +193,7 @@ pub fn main() -> anyhow::Result<()> {
 
     loop {
         let now = Instant::now();
-        let will_stop = now.duration_since(start) > Duration::from_secs(120);
+        let will_stop = now.duration_since(start) > Duration::from_secs(600);
 
         if now.duration_since(last_output) > Duration::from_secs(1)
             || will_stop && (inbound_sent != 0 && outbound_sent != 0)
