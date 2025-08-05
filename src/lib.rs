@@ -217,10 +217,16 @@ impl SocketHandle {
                                 .filter(|x| **x != n)
                                 .count();
                             if n as usize >= found.len() {
-                                println!("invalid value in buffer {} packet length {} {:?}", n, length, buf);
+                                println!(
+                                    "invalid value in buffer {} packet length {} {:?}",
+                                    n, length, buf
+                                );
                                 recv_err += 1;
                             } else if other_count > 0 {
-                                println!("buffer isn't uniform {} values are not {}", other_count, n);
+                                println!(
+                                    "buffer isn't uniform {} values are not {}",
+                                    other_count, n
+                                );
                                 recv_err += 1;
                             } else {
                                 let n = n as usize;
