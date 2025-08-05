@@ -164,7 +164,7 @@ impl SocketHandle {
         recv_client: &SocketHandle,
         count: usize,
         size: usize,
-    ) -> (usize, usize, usize, Vec<usize>) {
+    ) -> (usize, usize, usize, Option<f32>) {
         // send response
         let mut found = vec![false; count];
 
@@ -175,6 +175,8 @@ impl SocketHandle {
         assert!(count < 256);
         assert!(min_length <= size);
         assert!(size <= 0xFFFF);
+        let start = Instant::now();
+
         for i in 0..count {
             let length = rand.gen_range(min_length..=size) as u16;
             let mut buf = Vec::with_capacity(length as usize);
@@ -190,14 +192,15 @@ impl SocketHandle {
 
         let mut recv = 0;
         let mut recv_err = 0;
-        let rtts = vec![];
 
         let mut left = count;
+        let mut last = None;
 
         while left > 0 {
             match recv_client.recv_from(&mut buf) {
                 Ok((length, _)) => {
                     let buf = &buf[0..length];
+                    last = Some(Instant::now());
                     left -= 1;
                     if length < min_length {
                         println!("rx too short");
@@ -245,11 +248,23 @@ impl SocketHandle {
                     }
                 }
                 Err(_) => {
-                    return (count, recv, recv_err, rtts);
+                    return (
+                        count,
+                        recv,
+                        recv_err,
+                        last.and_then(|i| {
+                            Some(i.duration_since(start).as_micros() as f32 / 1000.0)
+                        }),
+                    );
                 }
             }
         }
-        (count, recv, recv_err, rtts)
+        (
+            count,
+            recv,
+            recv_err,
+            last.and_then(|i| Some(i.duration_since(start).as_micros() as f32 / 1000.0)),
+        )
     }
 
     pub fn relay_to_client(

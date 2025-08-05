@@ -1,7 +1,8 @@
 use std::{
     cell::RefCell,
-    cmp::min,
+    cmp::{max, min},
     env,
+    io::{self, Write},
     net::{ToSocketAddrs, UdpSocket},
     process::exit,
     rc::Rc,
@@ -14,7 +15,7 @@ use time::OffsetDateTime;
 
 const CYCLES: u32 = 2;
 const TIMEOUT: Duration = Duration::from_millis(400);
-const PINGS_PER_ROUND: usize = 10;
+const PINGS_PER_ROUND: usize = 5;
 const PING_SIZE: usize = 1200;
 
 pub fn main() -> anyhow::Result<()> {
@@ -129,6 +130,7 @@ pub fn main() -> anyhow::Result<()> {
     turn_a.add_permission(turn_b.relay_addr().unwrap())?;
     turn_b.add_permission(turn_a.relay_addr().unwrap())?;
 
+    let mut max_ping = Duration::ZERO;
     // client1 -> A -> B -> client2
     let mut min_c_a_b_c = Duration::MAX;
     let mut count_c_a_b_c = 0;
@@ -141,12 +143,14 @@ pub fn main() -> anyhow::Result<()> {
         // client -> turn a -> turn b -> client
         if let Ok((time, _peer_observed)) = turn_a.relay_to_client(&turn_b) {
             min_c_a_b_c = min(min_c_a_b_c, time);
+            max_ping = max(max_ping, time);
             count_c_a_b_c += 1;
         }
 
         // client -> turn b -> turn a -> client
         if let Ok((time, _peer_observed)) = turn_b.relay_to_client(&turn_a) {
             min_c_b_a_c = min(min_c_b_a_c, time);
+            max_ping = max(max_ping, time);
             count_c_b_a_c += 1;
         }
     }
@@ -177,15 +181,37 @@ pub fn main() -> anyhow::Result<()> {
 
     println!("time, sent, recv / recv-err / loss %"); // , rtt min / avg / max / stddev, throughput");
 
+    println!("maximum observed ping time {} ms", fmt_ms(max_ping));
+
+    let ranges = [
+        (
+            (max_ping.as_millis() + 2) + (max_ping.as_millis() / 10),
+            '.',
+        ),
+        (
+            (max_ping.as_millis() + 10) + (max_ping.as_millis() / 5),
+            '1',
+        ),
+        (
+            (max_ping.as_millis() + 30) + (max_ping.as_millis() / 2),
+            '2',
+        ),
+        (2 * max_ping.as_millis() + 50, '3'),
+        (u128::MAX, '>'),
+    ];
+
+    println!(
+        "ping range .: < {} ms 1: < {} ms 2: < {} ms 3: < {} ms >",
+        ranges[0].0, ranges[1].0, ranges[2].0, ranges[3].0
+    );
+
     let mut inbound_sent = 0;
     let mut inbound_recv = 0;
     let mut inbound_recv_err = 0;
-    let mut inbound_rtts = vec![];
 
     let mut outbound_sent = 0;
     let mut outbound_recv = 0;
     let mut outbound_recv_err = 0;
-    let mut outbound_rtts = vec![];
 
     let start = Instant::now();
     let mut last_refresh = start;
@@ -204,6 +230,7 @@ pub fn main() -> anyhow::Result<()> {
             //let (inbound_min, inbound_max, inbound_avg, inbound_dev) = ("?", "?", "?", "?");
             //let (outbound_min, outbound_max, outbound_avg, outbound_dev) = ("?", "?", "?", "?");
 
+            println!("");
             println!(
                 concat!(
                     "{:02}:{:02}:{:02} inbound pings {}, {} / {} / {}%",
@@ -229,12 +256,10 @@ pub fn main() -> anyhow::Result<()> {
             inbound_sent = 0;
             inbound_recv = 0;
             inbound_recv_err = 0;
-            inbound_rtts = vec![];
 
             outbound_sent = 0;
             outbound_recv = 0;
             outbound_recv_err = 0;
-            outbound_rtts = vec![];
 
             last_output = now;
         }
@@ -252,24 +277,40 @@ pub fn main() -> anyhow::Result<()> {
             turn_b.add_permission(turn_a.relay_addr().unwrap())?;
         }
 
-        let (sent, recv, recv_err, mut rtts) =
+        let (sent, recv, recv_err, rtt) =
             turn_b.relay_to_client_multiple(&turn_a, PINGS_PER_ROUND, PING_SIZE);
 
         inbound_sent += sent;
         inbound_recv += recv;
         inbound_recv_err += recv_err;
-        inbound_rtts.append(&mut rtts);
+        print_rtt(rtt, &ranges);
 
-        let (sent, recv, recv_err, mut rtts) =
+        let (sent, recv, recv_err, rtt) =
             turn_a.relay_to_client_multiple(&turn_b, PINGS_PER_ROUND, PING_SIZE);
 
         outbound_sent += sent;
         outbound_recv += recv;
         outbound_recv_err += recv_err;
-        outbound_rtts.append(&mut rtts);
+        print_rtt(rtt, &ranges);
 
         sleep(Duration::from_millis(10)); // sleep here to reduce maximum traffic
     }
 
     Ok(())
+}
+
+fn print_rtt(rtt: Option<f32>, ranges: &[(u128, char)]) {
+    if let Some(rtt) = rtt {
+        let rtt = rtt.floor() as u128;
+        for (max, out) in ranges.iter() {
+            if rtt < *max {
+                print!("{}", out);
+                let _ = io::stdout().flush();
+                return;
+            }
+        }
+    } else {
+        print!("?");
+        let _ = io::stdout().flush();
+    }
 }
