@@ -173,11 +173,10 @@ impl SocketHandle {
         rand.fill_bytes(&mut stub);
         let min_length = STUB_LEN + 3;
         assert!(count < 256);
+        assert!(min_length <= size);
+        assert!(size <= 0xFFFF);
         for i in 0..count {
-            assert!(min_length <= size);
-            assert!(size <= 0xFFFF);
             let length = rand.gen_range(min_length..=size) as u16;
-
             let mut buf = Vec::with_capacity(length as usize);
             buf.extend(stub);
             buf.write_u16::<NetworkEndian>(length).unwrap();
@@ -198,26 +197,35 @@ impl SocketHandle {
         while left > 0 {
             match recv_client.recv_from(&mut buf) {
                 Ok((length, _)) => {
+                    let buf = &buf[0..length];
                     left -= 1;
                     if length < min_length {
+                        println!("rx too short");
                         recv_err += 1;
                     } else if buf[0..STUB_LEN] == stub {
                         let intended_length = NetworkEndian::read_u16(&buf[STUB_LEN..STUB_LEN + 2]);
                         if length < intended_length.into() {
+                            println!("rx short");
                             recv_err += 1;
                         } else if length > intended_length.into() {
+                            println!("rx long");
                             recv_err += 1;
                         } else {
-                            let n = buf[STUB_LEN + 3];
-                            let other_count = buf[STUB_LEN + 3..length]
+                            let n = buf[STUB_LEN + 2];
+                            let other_count = buf[STUB_LEN + 2..length]
                                 .iter()
                                 .filter(|x| **x != n)
                                 .count();
-                            if other_count > 0 || n as usize >= found.len() {
+                            if n as usize >= found.len() {
+                                println!("invalid value in buffer {} packet length {} {:?}", n, length, buf);
+                                recv_err += 1;
+                            } else if other_count > 0 {
+                                println!("buffer isn't uniform {} values are not {}", other_count, n);
                                 recv_err += 1;
                             } else {
                                 let n = n as usize;
                                 if found[n] {
+                                    println!("duplicate");
                                     recv_err += 1;
                                 } else {
                                     recv += 1;
@@ -225,6 +233,9 @@ impl SocketHandle {
                                 }
                             }
                         }
+                    } else {
+                        println!("wrong batch");
+                        recv_err += 1;
                     }
                 }
                 Err(_) => {
