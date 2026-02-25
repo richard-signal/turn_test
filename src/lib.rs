@@ -201,11 +201,11 @@ impl SocketHandle {
                 Ok((length, _)) => {
                     let buf = &buf[0..length];
                     last = Some(Instant::now());
-                    left -= 1;
                     if length < min_length {
                         println!("rx too short");
                         recv_err += 1;
                     } else if buf[0..STUB_LEN] == stub {
+                        left -= 1;
                         let intended_length = NetworkEndian::read_u16(&buf[STUB_LEN..STUB_LEN + 2]);
                         if length < intended_length.into() {
                             println!("rx short");
