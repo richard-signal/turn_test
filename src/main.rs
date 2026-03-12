@@ -272,6 +272,7 @@ pub fn main() -> anyhow::Result<()> {
             last_refresh = now;
             println!("refreshing allocation permissions");
 
+            turn_a.refresh()?;
             turn_b.refresh()?;
             turn_a.add_permission(turn_b.relay_addr().unwrap())?;
             turn_b.add_permission(turn_a.relay_addr().unwrap())?;
