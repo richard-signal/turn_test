@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use test_client::{fmt_ms, SocketHandle, TurnClient};
+use test_client::{SocketHandle, TurnClient, fmt_ms};
 use time::OffsetDateTime;
 
 const CYCLES: u32 = 2;

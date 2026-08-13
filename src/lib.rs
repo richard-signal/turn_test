@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use byteorder::{ByteOrder, NetworkEndian, ReadBytesExt, WriteBytesExt};
 use hmac::{Hmac, Mac};
 use md5::{Digest, Md5};
-use rand::{rngs::ThreadRng, Rng, RngCore};
+use rand::{Rng, RngCore, rngs::ThreadRng};
 use sha1::Sha1;
 
 use std::{
@@ -33,7 +33,7 @@ const CLASS_MASK: u16 = 0x110;
 
 const CLASS_REQUEST: u16 = 0x000;
 const CLASS_INDICATION: u16 = 0x010;
-const CLASS_SUCCESS: u16 = 0x100;
+pub const CLASS_SUCCESS: u16 = 0x100;
 const CLASS_FAILURE: u16 = 0x110;
 
 const ATTRIBUTE_MAPPED: u16 = 0x0001;
@@ -48,10 +48,11 @@ const ATTRIBUTE_NONCE: u16 = 0x0015;
 const ATTRIBUTE_XOR_RELAYED: u16 = 0x0016;
 const ATTRIBUTE_REQUESTED_TRANSPORT: u16 = 0x0019;
 const ATTRIBUTE_XOR_MAPPED: u16 = 0x0020;
+const ATTRIBUTE_X_CORE_ID: u16 = 0xFFFF;
 
 const STUB_LEN: usize = 8;
 
-fn bind_pls() -> Message {
+pub fn bind_pls() -> Message {
     let mut message = Message::default();
     message.class = CLASS_REQUEST;
     message.method = BIND;
@@ -201,11 +202,11 @@ impl SocketHandle {
                 Ok((length, _)) => {
                     let buf = &buf[0..length];
                     last = Some(Instant::now());
+                    left -= 1;
                     if length < min_length {
                         println!("rx too short");
                         recv_err += 1;
                     } else if buf[0..STUB_LEN] == stub {
-                        left -= 1;
                         let intended_length = NetworkEndian::read_u16(&buf[STUB_LEN..STUB_LEN + 2]);
                         if length < intended_length.into() {
                             println!("rx short");
@@ -513,18 +514,19 @@ impl TurnClient {
 }
 
 #[derive(Default)]
-struct Message {
+pub struct Message {
     method: u16,
-    class: u16,
-    transaction_id: [u8; 12],
+    pub class: u16,
+    pub transaction_id: [u8; 12],
     error: Option<u16>,
     error_message: Option<String>,
     realm: Option<String>,
     nonce: Option<Vec<u8>>,
-    xor_addr: Option<SocketAddr>,
+    pub xor_addr: Option<SocketAddr>,
     addr: Option<SocketAddr>,
     xor_relayed: Option<SocketAddr>,
     xor_peer: Vec<SocketAddr>,
+    pub x_core_id: Option<u64>,
     username: Option<String>,
     password: Option<String>,
     key: Option<[u8; 16]>,
@@ -624,7 +626,7 @@ impl Debug for Message {
     }
 }
 
-fn parse(request: Option<&Message>, data: &[u8]) -> anyhow::Result<Message> {
+pub fn parse(request: Option<&Message>, data: &[u8]) -> anyhow::Result<Message> {
     let mut cursor = Cursor::new(data);
 
     let message_type = cursor.read_u16::<NetworkEndian>()?;
@@ -696,6 +698,7 @@ impl Message {
                 ATTRIBUTE_XOR_MAPPED => {
                     self.xor_addr = Some(Self::parse_xor_address(&value, transaction_id)?)
                 }
+                ATTRIBUTE_X_CORE_ID => self.x_core_id = Some(Self::parse_x_core_id(&value)?),
                 other => {
                     if other < 0x8000 {
                         println!("{} {} {:?}", attribute_type, len, value);
@@ -765,6 +768,15 @@ impl Message {
         }
     }
 
+    fn parse_x_core_id(value: &[u8]) -> anyhow::Result<u64> {
+        if value.len() == 8 {
+            Ok(NetworkEndian::read_u64(&value[0..8]))
+        } else {
+            println!("x core id {:?}", value);
+            unimplemented!();
+        }
+    }
+
     fn parse_mapped(&mut self, value: &[u8]) -> anyhow::Result<()> {
         if value.len() == 8 && value[1] == 1 {
             let port = NetworkEndian::read_u16(&value[2..4]);
@@ -800,7 +812,7 @@ impl Message {
         Ok(())
     }
 
-    fn serialize(&mut self) -> Vec<u8> {
+    pub fn serialize(&mut self) -> Vec<u8> {
         let mut packet = vec![];
 
         let message_type = self.method | self.class;
