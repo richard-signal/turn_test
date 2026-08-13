@@ -65,8 +65,7 @@ pub fn main() -> anyhow::Result<()> {
     let addr_a = server_a
         .to_socket_addrs()
         .unwrap()
-        .filter(|a| a.is_ipv4())
-        .next()
+        .find(|a| a.is_ipv4())
         .unwrap();
     println!("turn a: {} ({})", server_a, addr_a);
     let turn_a = SocketHandle::Turn(Rc::new(RefCell::new(TurnClient::new(
@@ -77,12 +76,11 @@ pub fn main() -> anyhow::Result<()> {
     ))));
     turn_a.allocate()?;
 
-    let (turn_b, client_1_2_path, client_2_1_path) = if server_b != "" {
+    let (turn_b, client_1_2_path, client_2_1_path) = if !server_b.is_empty() {
         let addr_b = server_b
             .to_socket_addrs()
             .unwrap()
-            .filter(|a| a.is_ipv4())
-            .next()
+            .find(|a| a.is_ipv4())
             .unwrap();
         println!("turn b: {} ({})", server_b, addr_b);
         let turn_b = SocketHandle::Turn(Rc::new(RefCell::new(TurnClient::new(
@@ -230,7 +228,7 @@ pub fn main() -> anyhow::Result<()> {
             //let (inbound_min, inbound_max, inbound_avg, inbound_dev) = ("?", "?", "?", "?");
             //let (outbound_min, outbound_max, outbound_avg, outbound_dev) = ("?", "?", "?", "?");
 
-            println!("");
+            println!();
             println!(
                 concat!(
                     "{:02}:{:02}:{:02} inbound pings {}, {} / {} / {}%",

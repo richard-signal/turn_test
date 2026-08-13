@@ -53,46 +53,52 @@ const ATTRIBUTE_X_CORE_ID: u16 = 0xFFFF;
 const STUB_LEN: usize = 8;
 
 pub fn bind_pls() -> Message {
-    let mut message = Message::default();
-    message.class = CLASS_REQUEST;
-    message.method = BIND;
+    let mut message = Message {
+        class: CLASS_REQUEST,
+        method: BIND,
+        ..Message::default()
+    };
     ThreadRng::default().fill_bytes(&mut message.transaction_id);
     message
 }
 
 fn allocate_pls() -> Message {
-    let mut message = Message::default();
-    message.class = CLASS_REQUEST;
-    message.method = ALLOCATE;
-    message.requested_transport = Some(17); // IPPROTO_UDP
-
+    let mut message = Message {
+        class: CLASS_REQUEST,
+        method:ALLOCATE,
+        requested_transport: Some(17), // IPPROTO_UDP
+        ..Message::default()
+    };
     ThreadRng::default().fill_bytes(&mut message.transaction_id);
     message
 }
 
 fn refresh_pls() -> Message {
-    let mut message = Message::default();
-    message.class = CLASS_REQUEST;
-    message.method = REFRESH;
-
+    let mut message = Message {
+        class: CLASS_REQUEST,
+        method: REFRESH,
+        ..Message::default()
+    };
     ThreadRng::default().fill_bytes(&mut message.transaction_id);
     message
 }
 
 fn permission_pls() -> Message {
-    let mut message = Message::default();
-    message.class = CLASS_REQUEST;
-    message.method = CREATE_PERM;
-
+    let mut message = Message {
+        class: CLASS_REQUEST,
+        method: CREATE_PERM,
+        ..Message::default()
+    };
     ThreadRng::default().fill_bytes(&mut message.transaction_id);
     message
 }
 
 fn send_data_pls() -> Message {
-    let mut message = Message::default();
-    message.class = CLASS_INDICATION;
-    message.method = SEND;
-
+    let mut message = Message {
+        class: CLASS_INDICATION,
+        method: SEND,
+        ..Message::default()
+    };
     ThreadRng::default().fill_bytes(&mut message.transaction_id);
     message
 }
@@ -120,7 +126,7 @@ impl SocketHandle {
 
     pub fn relay_addr(&self) -> Option<SocketAddr> {
         match self {
-            SocketHandle::Udp(socket) => socket.borrow().0.clone(),
+            SocketHandle::Udp(socket) => socket.borrow().0,
             SocketHandle::Turn(socket) => socket.borrow().relay_addr,
         }
     }
@@ -134,7 +140,7 @@ impl SocketHandle {
 
     pub fn reflexive_addr(&self) -> Option<SocketAddr> {
         match self {
-            SocketHandle::Udp(socket) => socket.borrow().0.clone(),
+            SocketHandle::Udp(socket) => socket.borrow().0,
             SocketHandle::Turn(socket) => socket.borrow().reflexive_addr,
         }
     }
@@ -170,7 +176,7 @@ impl SocketHandle {
         let mut found = vec![false; count];
 
         let mut rand = ThreadRng::default();
-        let mut stub = [0 as u8; STUB_LEN];
+        let mut stub = [0_u8; STUB_LEN];
         rand.fill_bytes(&mut stub);
         let min_length = STUB_LEN + 3;
         assert!(count < 256);
@@ -185,7 +191,7 @@ impl SocketHandle {
             buf.write_u16::<NetworkEndian>(length).unwrap();
             buf.resize(length.into(), i as u8);
 
-            NetworkEndian::write_u16(&mut buf[STUB_LEN..STUB_LEN + 2], length as u16);
+            NetworkEndian::write_u16(&mut buf[STUB_LEN..STUB_LEN + 2], length);
             let _ = self.send_to(&buf, recv_client.relay_addr().unwrap());
         }
 
@@ -253,9 +259,8 @@ impl SocketHandle {
                         count,
                         recv,
                         recv_err,
-                        last.and_then(|i| {
-                            Some(i.duration_since(start).as_micros() as f32 / 1000.0)
-                        }),
+                        last.map(|i| 
+                            i.duration_since(start).as_micros() as f32 / 1000.0)
                     );
                 }
             }
@@ -264,7 +269,7 @@ impl SocketHandle {
             count,
             recv,
             recv_err,
-            last.and_then(|i| Some(i.duration_since(start).as_micros() as f32 / 1000.0)),
+            last.map(|i| i.duration_since(start).as_micros() as f32 / 1000.0),
         )
     }
 
@@ -645,9 +650,11 @@ pub fn parse(request: Option<&Message>, data: &[u8]) -> anyhow::Result<Message> 
         unimplemented!()
     }
 
-    let mut message = Message::default();
-    message.method = method;
-    message.class = class;
+    let mut message = Message {
+        method,
+        class,
+        .. Message::default()
+    };
 
     if let Some(request) = request {
         // copy request auth values into response
@@ -669,7 +676,7 @@ impl Message {
         cursor: &mut Cursor<&[u8]>,
         transaction_id: &[u8],
     ) -> anyhow::Result<()> {
-        while cursor.fill_buf()?.len() != 0 {
+        while !cursor.fill_buf()?.is_empty() {
             let attribute_type = cursor.read_u16::<NetworkEndian>()?;
             let len = cursor.read_u16::<NetworkEndian>()?;
             let mut value = vec![0; len as usize];
@@ -737,10 +744,9 @@ impl Message {
     }
 
     fn parse_realm(&mut self, value: &[u8]) -> anyhow::Result<()> {
-        if let Some(realm) = &self.realm {
-            if realm != std::str::from_utf8(value)? {
+        if let Some(realm) = &self.realm 
+            && realm != std::str::from_utf8(value)? {
                 unimplemented!();
-            }
         }
         self.realm = Some(std::str::from_utf8(value)?.to_owned());
         Ok(())
@@ -802,7 +808,7 @@ impl Message {
         let position = cursor.position();
         let mut packet = vec![0; position as usize - 24];
         cursor.set_position(0);
-        cursor.read(&mut packet)?;
+        cursor.read_exact(&mut packet)?;
         let len = packet.len() - 20 + 24;
         packet[2] = ((len & 0xFF00) >> 8) as u8;
         packet[3] = (len & 0xFF) as u8;
@@ -819,7 +825,7 @@ impl Message {
         packet.write_u16::<NetworkEndian>(message_type).unwrap();
         packet.write_u16::<NetworkEndian>(0).unwrap();
         packet.write_u32::<NetworkEndian>(COOKIE).unwrap();
-        packet.write(&self.transaction_id).unwrap();
+        packet.write_all(&self.transaction_id).unwrap();
 
         if self.error.is_some() || self.xor_addr.is_some() || self.addr.is_some() {
             unimplemented!();
@@ -829,18 +835,18 @@ impl Message {
         self.add_xor_peer(&mut packet, &self.transaction_id);
         self.add_data(&mut packet);
 
-        if self.username.is_some()
-            && self.password.is_some()
-            && self.realm.is_some()
+        if let Some(username) = &self.username
+            && let Some(password) = &self.password
+            && let Some(realm) = &self.realm
             && self.nonce.is_some()
         {
             if self.key.is_none() {
                 let mut hasher = Md5::new();
-                hasher.update(self.username.as_ref().unwrap().as_bytes());
+                hasher.update(username.as_bytes());
                 hasher.update(b":");
-                hasher.update(&self.realm.as_ref().unwrap().as_bytes());
+                hasher.update(realm.as_bytes());
                 hasher.update(b":");
-                hasher.update(&self.password.as_ref().unwrap().as_bytes());
+                hasher.update(password.as_bytes());
                 let key = hasher.finalize();
                 self.key = Some(key.into());
             }
@@ -944,20 +950,20 @@ impl Message {
     fn add_tlv(packet: &mut Vec<u8>, attribute_type: u16, value: &[u8]) {
         packet.write_u16::<NetworkEndian>(attribute_type).unwrap();
         let len = value.len() as u16;
-        packet.write_u16::<NetworkEndian>(len as u16).unwrap();
-        packet.write(value).unwrap();
+        packet.write_u16::<NetworkEndian>(len).unwrap();
+        packet.write_all(value).unwrap();
         let remainder = len & 0x3;
         if remainder != 0 {
             let remainder = 4 - remainder;
             let padding = vec![0; remainder as usize];
-            packet.write(&padding).unwrap();
+            packet.write_all(&padding).unwrap();
         }
     }
 }
 
 pub fn fmt_ms(d: Duration) -> String {
     if d == Duration::MAX {
-        format!("timeout")
+        "timeout".to_string()
     } else {
         format!("{:.1}", d.as_micros() as f32 / 1000.0)
     }
